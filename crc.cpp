@@ -24,18 +24,17 @@ uint16_t crcCalc(uint16_t crcReg, uint8_t crcData)
 {
   uint8_t i;
 
-  for (i = 0; i < 8; i++) {
+  for (i = 0; i < 8; i++) 
+  {
     // If upper most bit is 1
-    if (((crcReg & 0x8000) >> 8) ^ (crcData & 0x80)) {
+    if (((crcReg & 0x8000) >> 8) ^ (crcData & 0x80))
       crcReg = (crcReg << 1)  ^ CRC_POLYNOM;
-    }
-    else {
+    else
       crcReg = (crcReg << 1);
-    }
 
     crcData <<= 1;
   }
-
+  
   return crcReg;
 }
 
@@ -64,8 +63,10 @@ uint8_t crcRemove(uint8_t *data, uint8_t dataLen)
   data += 12;
   dataLen -= 12;
 
-  while (dataLen) {
-    if (dataLen >= 18) {
+  while (dataLen)
+  {
+    if (dataLen >= 18)
+    {
       memmove(dst, data, 16);
 
       dst += 16;
@@ -74,7 +75,8 @@ uint8_t crcRemove(uint8_t *data, uint8_t dataLen)
       data += 18;
       dataLen -= 18;
     }
-    else {
+    else
+    {
       memmove(dst, data, dataLen-2);
 
       dst += (dataLen-2);

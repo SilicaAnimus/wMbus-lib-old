@@ -10,27 +10,14 @@ uint8_t MBbytes[584];
 
 RXinfoDescr RXinfo;
 
-uint32_t sync_time_{0};
-uint8_t extra_time_ = 20;
-uint8_t max_wait_time_ = extra_time_;
-
 uint8_t rf_mbus_on(bool force) {
-  // waiting to long for next part of data?
-  bool reinit_needed = ((millis() - sync_time_) > max_wait_time_) ? true: false;
-
-  if (!force) {
-    if (!reinit_needed) {
-      // already in RX?
-      if (ELECHOUSE_cc1101.SpiReadStatus(CC1101_MARCSTATE) == MARCSTATE_RX) {
-        return 0;
-      }
-    }
+  // already in RX?
+  if (!force && (ELECHOUSE_cc1101.SpiReadStatus(CC1101_MARCSTATE) == MARCSTATE_RX)) {
+    return 0;
   }
 
   // init RX here, each time we're idle
   RXinfo.state = 0;
-  sync_time_ = millis();
-  max_wait_time_ = extra_time_;
 
   ELECHOUSE_cc1101.SpiStrobe(CC1101_SIDLE);
   while((ELECHOUSE_cc1101.SpiReadStatus(CC1101_MARCSTATE) != MARCSTATE_IDLE));
@@ -42,6 +29,7 @@ uint8_t rf_mbus_on(bool force) {
   RXinfo.length      = 0;           // Total length of bytes to receive packet
   RXinfo.bytesLeft   = 0;           // Bytes left to to be read from the RX FIFO
   RXinfo.pByteIndex  = MBbytes;     // Pointer to current position in the byte array
+  RXinfo.start       = true;        // Sync or End of Packet
   RXinfo.complete    = false;       // Packet Received
 
   memset(MBbytes, 0, sizeof(MBbytes));
@@ -59,12 +47,11 @@ uint8_t rf_mbus_on(bool force) {
   return 1; // this will indicate we just have re-started RX
 }
 
-bool rf_mbus_init(uint8_t mosi, uint8_t miso, uint8_t clk, uint8_t cs, uint8_t gdo0, uint8_t gdo2) {
-  bool retVal = false;
+void rf_mbus_init(byte sck, byte miso, byte mosi, byte ss, byte gdo0, byte gdo2) {
   Serial.println("");
   pinMode(gdo0, INPUT);
   pinMode(gdo2, INPUT);
-  ELECHOUSE_cc1101.setSpiPin(clk, miso, mosi, cs);
+  ELECHOUSE_cc1101.setSpiPin(sck, miso, mosi, ss);
 
   ELECHOUSE_cc1101.Init();
 
@@ -76,25 +63,17 @@ bool rf_mbus_init(uint8_t mosi, uint8_t miso, uint8_t clk, uint8_t cs, uint8_t g
   ELECHOUSE_cc1101.SpiStrobe(CC1101_SCAL);
 
   byte cc1101Version = ELECHOUSE_cc1101.SpiReadStatus(CC1101_VERSION);
+  Serial.print("CC1101 version: ");
+  Serial.println(cc1101Version);
 
-  if ((cc1101Version != 0) && (cc1101Version != 255)) {
-    retVal = true;
-    Serial.print("wMBus-lib: CC1101 version '");
-    Serial.print(cc1101Version);
-    Serial.println("'");
-    ELECHOUSE_cc1101.SetRx();
-    Serial.println("wMBus-lib: CC1101 initialized");
-    memset(&RXinfo, 0, sizeof(RXinfo));
-    delay(4);
-  }
-  else {
-    Serial.println("wMBus-lib: CC1101 initialization FAILED!");
-  }
+  ELECHOUSE_cc1101.SetRx();
 
-  return retVal;
+  Serial.println("CC1101 initialized");
+  memset(&RXinfo, 0, sizeof(RXinfo));
+  delay(4);
 }
 
-bool rf_mbus_task(uint8_t* MBpacket, int8_t &rssi, uint8_t &lqi, byte gdo0, byte gdo2) {
+bool rf_mbus_task(uint8_t* MBpacket, int &rssi, byte gdo0, byte gdo2) {
   uint8_t bytesDecoded[2];
 
   switch (RXinfo.state) {
@@ -108,7 +87,6 @@ bool rf_mbus_task(uint8_t* MBpacket, int8_t &rssi, uint8_t &lqi, byte gdo0, byte
     case 1:
       if (digitalRead(gdo2)) {
         RXinfo.state = 2;
-        sync_time_ = millis();
       }
       break;
 
@@ -142,9 +120,9 @@ bool rf_mbus_task(uint8_t* MBpacket, int8_t &rssi, uint8_t &lqi, byte gdo0, byte
 
         RXinfo.pByteIndex += 3;
         RXinfo.bytesLeft   = RXinfo.length - 3;
-
+      
+        RXinfo.start = false;
         RXinfo.state = 3;
-        max_wait_time_ += extra_time_;
 
         ELECHOUSE_cc1101.SpiWriteReg(CC1101_FIFOTHR, RX_FIFO_THRESHOLD);
       }
@@ -160,8 +138,6 @@ bool rf_mbus_task(uint8_t* MBpacket, int8_t &rssi, uint8_t &lqi, byte gdo0, byte
 
         RXinfo.bytesLeft  -= (bytesInFIFO - 1);
         RXinfo.pByteIndex += (bytesInFIFO - 1);
-
-        max_wait_time_ += extra_time_;
       }
       break;
   }
@@ -171,23 +147,13 @@ bool rf_mbus_task(uint8_t* MBpacket, int8_t &rssi, uint8_t &lqi, byte gdo0, byte
   if ((!overfl) && (!digitalRead(gdo2)) && (RXinfo.state > 1)) {
     ELECHOUSE_cc1101.SpiReadBurstReg(CC1101_RXFIFO, RXinfo.pByteIndex, (uint8_t)RXinfo.bytesLeft);
 
-    // decode
+    // decode!
     uint16_t rxStatus = PACKET_CODING_ERROR;
     rxStatus = decodeRXBytesTmode(MBbytes, MBpacket, packetSize(RXinfo.lengthField));
 
     if (rxStatus == PACKET_OK) {
       RXinfo.complete = true;
-      rssi = (int8_t)ELECHOUSE_cc1101.getRssi();
-      lqi = (uint8_t)ELECHOUSE_cc1101.getLqi();
-    }
-    else if (rxStatus == PACKET_CODING_ERROR) {
-      Serial.print("wMBus-lib: Error during decoding '3 out of 6'");
-    }
-    else if (rxStatus == PACKET_CRC_ERROR) {
-      Serial.println("wMBus-lib: Error during decoding 'CRC'");
-    }
-    else {
-      Serial.println("wMBus-lib: Error during decoding 'unknown'");
+      rssi = ELECHOUSE_cc1101.getRssi();
     }
     RXinfo.state = 0;
     return RXinfo.complete;
